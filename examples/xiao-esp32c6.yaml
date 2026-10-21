@@ -34,6 +34,13 @@ openthread:
 thread_provisioning:
   authorizer: ${authorizer}
 
+# The dataset is accepted only over an LE Secure Connections link (thread_provisioning's `require_encryption`, through
+# ble_link_security): Just Works pairing, or a static passkey printed on the device for MITM protection
+esp32_ble:
+  auth_req_mode: sc_bond
+  min_key_size: 16
+  max_key_size: 16
+
 api:
   encryption: {}  # no key: the Hub sets one over the zero PSK at pairing
 

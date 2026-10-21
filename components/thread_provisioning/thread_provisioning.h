@@ -59,6 +59,7 @@ class ThreadProvisioning final : public Component {
 #endif
   void set_authorized_duration(uint32_t duration) { this->authorized_duration_ = duration; }
   void set_attach_timeout(uint32_t timeout) { this->attach_timeout_ = timeout; }
+  void set_require_encryption(bool require) { this->require_encryption_ = require; }
 
  protected:
   enum class Phase : uint8_t { CHECKING, STARTING, SERVING, ATTACHING, DONE };
@@ -81,6 +82,7 @@ class ThreadProvisioning final : public Component {
   uint32_t attach_timeout_{60000};
   uint32_t attach_start_{0};
   bool advertising_{false};
+  bool require_encryption_{true};
   otOperationalDatasetTlvs placeholder_{};  // restored when the node cannot attach with the dataset it was given
   std::vector<uint8_t> incoming_;
 

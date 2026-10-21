@@ -2,6 +2,7 @@
 
 #if defined(USE_ESP32) && defined(USE_OPENTHREAD)
 
+#include "esphome/components/ble_link_security/ble_link_security.h"
 #include "esphome/components/bytebuffer/bytebuffer.h"
 #include "esphome/components/esp32_ble/ble.h"
 #include "esphome/components/esp32_ble_server/ble_2902.h"
@@ -124,6 +125,8 @@ void ThreadProvisioning::start_service_() {
         ERROR_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
     this->error_char_->add_descriptor(new BLE2902());
     this->rpc_char_ = this->service_->create_characteristic(RPC_UUID, BLECharacteristic::PROPERTY_WRITE);
+    if (this->require_encryption_)
+      ble_link_security::global_ble_link_security->protect(this->rpc_char_);
     this->rpc_char_->on_write([this](std::span<const uint8_t> data, uint16_t) {
       this->incoming_.insert(this->incoming_.end(), data.begin(), data.end());
     });
@@ -247,6 +250,8 @@ void ThreadProvisioning::check_attached_() {
         esp32_ble::global_ble->advertising_stop();
       this->advertising_ = false;
       this->service_->stop();
+      // the controller's bond served only this; removing it drops a link still open
+      ble_link_security::global_ble_link_security->clear_bonds();
       this->disable_loop();
       ESP_LOGI(TAG, "Thread provisioning service stopped");
     });

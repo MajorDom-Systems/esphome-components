@@ -1,0 +1,52 @@
+# ESP32-C3 shipped without Wi-Fi: the Hub gives it a network over Improv BLE, which accepts the Wi-Fi password only
+# over an LE Secure Connections link (ble_link_security). Compile: esphome compile example/esp32c3_improv_secure.yaml
+substitutions:
+  authorizer: none  # or boot_button
+
+esphome:
+  name: md-hw-improv
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+logger:
+
+wifi:  # no networks: the Hub sets them over Improv
+
+esp32_improv:
+  authorizer: ${authorizer}
+  on_provisioned:
+    - delay: 10s  # lets the Hub read the result first: removing a bond drops its link
+    - ble_link_security.clear_bonds:  # the Hub's bond served only this
+
+esp32_ble:
+  auth_req_mode: sc_bond
+  min_key_size: 16
+  max_key_size: 16
+
+ble_link_security:
+  characteristics:
+    - service: 00467768-6228-2272-4663-277478268000  # Improv
+      characteristic: 00467768-6228-2272-4663-277478268003  # RPC command: carries the Wi-Fi password
+
+api:
+  encryption: {}
+
+binary_sensor:
+  - platform: gpio
+    id: boot_button
+    pin:
+      number: GPIO9
+      inverted: true
+      mode: INPUT_PULLUP
+
+button:
+  - platform: factory_reset
+    name: "Factory Reset"
