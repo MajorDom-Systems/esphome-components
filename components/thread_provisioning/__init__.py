@@ -4,16 +4,20 @@ The node is built with a placeholder network (`openthread: network_key:` only, n
 its active dataset, the node keeps Thread off and serves a BLE GATT service through which a controller writes the real
 active operational dataset (TLVs). It is applied with `otDatasetSetActiveTlvs` (kept in NVS by OpenThread itself), the
 node attaches, reports it, and stops advertising. A factory reset brings the placeholder, and the service, back.
+
+With a `setup_code` (8 digits printed on the device: see the `setup_code` component), a controller authenticates with it
+first (SPAKE2+, as Improv revision 2.5) and the dataset is accepted only sealed by that session; without an
+`authorizer`, nothing else is.
 """
 
 import esphome.codegen as cg
-from esphome.components import binary_sensor, esp32_ble
+from esphome.components import binary_sensor, esp32_ble, setup_code
 from esphome.components.esp32_ble import BTLoggers
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
 import esphome.final_validate as fv
 
-AUTO_LOAD = ["esp32_ble_server", "bytebuffer", "ble_link_security"]
+AUTO_LOAD = ["esp32_ble_server", "bytebuffer", "ble_link_security", "setup_code"]
 DEPENDENCIES = ["esp32", "openthread"]
 
 CONF_AUTHORIZER = "authorizer"
@@ -32,6 +36,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ATTACH_TIMEOUT, default="60s"): cv.positive_time_period_milliseconds,
         # the dataset (the network key) is accepted only over an LE Secure Connections link: see ble_link_security
         cv.Optional(CONF_REQUIRE_ENCRYPTION, default=True): cv.boolean,
+        cv.Optional(setup_code.CONF_SETUP_CODE): setup_code.validate_code,
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -58,5 +63,7 @@ async def to_code(config):
     cg.add(var.set_authorized_duration(config[CONF_AUTHORIZED_DURATION]))
     cg.add(var.set_attach_timeout(config[CONF_ATTACH_TIMEOUT]))
     cg.add(var.set_require_encryption(config[CONF_REQUIRE_ENCRYPTION]))
+    if setup_code.CONF_SETUP_CODE in config:
+        cg.add(var.set_setup_code(*setup_code.verifier_args(config[setup_code.CONF_SETUP_CODE])))
     if config.get(CONF_AUTHORIZER) is not None:
         cg.add(var.set_authorizer(await cg.get_variable(config[CONF_AUTHORIZER])))
