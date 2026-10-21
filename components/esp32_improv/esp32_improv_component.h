@@ -8,6 +8,7 @@
 #include "esphome/components/esp32_ble_server/ble_characteristic.h"
 #include "esphome/components/esp32_ble_server/ble_server.h"
 #include "esphome/components/improv_base/improv_base.h"
+#include "esphome/components/setup_code/setup_code.h"
 #include "esphome/components/wifi/wifi_component.h"
 
 #ifdef USE_ESP32_IMPROV_STATE_CALLBACK
@@ -22,6 +23,7 @@
 #include "esphome/components/output/binary_output.h"
 #endif
 
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -61,6 +63,11 @@ class ESP32ImprovComponent final : public Component, public improv_base::ImprovB
   void set_identify_duration(uint32_t identify_duration) { this->identify_duration_ = identify_duration; }
   void set_authorized_duration(uint32_t authorized_duration) { this->authorized_duration_ = authorized_duration; }
 
+  void set_setup_code(std::vector<uint8_t> salt, uint32_t iterations, const setup_code::SetupCodeAuth::Scalar &w0,
+                      const setup_code::SetupCodeAuth::Point &L) {
+    this->setup_code_ = std::make_unique<setup_code::SetupCodeAuth>(std::move(salt), iterations, w0, L);
+  }
+
   void set_wifi_timeout(uint32_t wifi_timeout) { this->wifi_timeout_ = wifi_timeout; }
   uint32_t get_wifi_timeout() const { return this->wifi_timeout_; }
 
@@ -95,6 +102,10 @@ class ESP32ImprovComponent final : public Component, public improv_base::ImprovB
   output::BinaryOutput *status_indicator_{nullptr};
 #endif
 
+  std::unique_ptr<setup_code::SetupCodeAuth> setup_code_;
+  uint32_t session_active_{0};  // ms: the last command sealed by the setup code session
+  bool sealed_response_{false};  // the Wi-Fi settings came sealed: so goes their result
+
   improv::State state_{improv::STATE_STOPPED};
   improv::Error error_state_{improv::ERROR_NONE};
 #ifdef USE_ESP32_IMPROV_STATE_CALLBACK
@@ -115,6 +126,11 @@ class ESP32ImprovComponent final : public Component, public improv_base::ImprovB
   improv::State get_initial_state_() const;
   void send_response_(std::span<const uint8_t> response);
   void process_incoming_data_();
+  void process_setup_code_();
+  void process_command_(const improv::ImprovCommand &command, bool sealed);
+  bool physically_authorized_(uint32_t now) const;
+  bool session_authorized_(uint32_t now) const;
+  uint8_t capability_flags_() const;
   void on_wifi_connect_timeout_();
   void check_wifi_connection_();
   bool check_identify_();

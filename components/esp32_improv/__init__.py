@@ -1,12 +1,16 @@
+"""ESPHome's esp32_improv (2026.9.1) with setup code authentication, Improv via BLE revision 2.5 (improv-wifi/website#70):
+with a `setup_code` (8 digits printed on the device), a client proves it knows the code and its Wi-Fi settings are
+accepted only sealed by that session; without an `authorizer`, nothing else is. Overrides the built-in component."""
+
 from esphome import automation
 import esphome.codegen as cg
-from esphome.components import binary_sensor, esp32_ble, improv_base, output
+from esphome.components import binary_sensor, esp32_ble, improv_base, output, setup_code
 from esphome.components.esp32_ble import BTLoggers
 import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_ON_START, CONF_ON_STATE, CONF_TRIGGER_ID
 from esphome.types import ConfigType
 
-AUTO_LOAD = ["esp32_ble_server", "improv_base"]
+AUTO_LOAD = ["esp32_ble_server", "improv_base", "setup_code"]
 CODEOWNERS = ["@jesserockz"]
 DEPENDENCIES = ["wifi", "esp32"]
 
@@ -56,6 +60,7 @@ CONFIG_SCHEMA = (
                 cv.none, cv.use_id(binary_sensor.BinarySensor)
             ),
             cv.Optional(CONF_STATUS_INDICATOR): cv.use_id(output.BinaryOutput),
+            cv.Optional(setup_code.CONF_SETUP_CODE): setup_code.validate_code,
             cv.Optional(
                 CONF_IDENTIFY_DURATION, default="10s"
             ): cv.positive_time_period_milliseconds,
@@ -126,6 +131,9 @@ async def to_code(config: ConfigType) -> None:
     if CONF_AUTHORIZER in config and config[CONF_AUTHORIZER] is not None:
         activator = await cg.get_variable(config[CONF_AUTHORIZER])
         cg.add(var.set_authorizer(activator))
+
+    if setup_code.CONF_SETUP_CODE in config:
+        cg.add(var.set_setup_code(*setup_code.verifier_args(config[setup_code.CONF_SETUP_CODE])))
 
     if CONF_STATUS_INDICATOR in config:
         status_indicator = await cg.get_variable(config[CONF_STATUS_INDICATOR])

@@ -51,7 +51,11 @@ void ESP32ImprovComponent::setup() {
     });
   }
 #endif
-  global_ble_server->on_disconnect([this](uint16_t conn_id) { this->set_error_(improv::ERROR_NONE); });
+  global_ble_server->on_disconnect([this](uint16_t conn_id) {
+    this->set_error_(improv::ERROR_NONE);
+    if (this->setup_code_)
+      this->setup_code_->end();
+  });
 
 #ifdef USE_PROVISIONING
   if (provisioning::global_provisioning_manager != nullptr) {
@@ -95,12 +99,7 @@ void ESP32ImprovComponent::setup_characteristics() {
       this->service_->create_characteristic(improv::CAPABILITIES_UUID, BLECharacteristic::PROPERTY_READ);
   BLEDescriptor *capabilities_descriptor = new BLE2902();
   this->capabilities_->add_descriptor(capabilities_descriptor);
-  uint8_t capabilities = 0x00;
-#ifdef USE_OUTPUT
-  if (this->status_indicator_ != nullptr)
-    capabilities |= improv::CAPABILITY_IDENTIFY;
-#endif
-  this->capabilities_->set_value(ByteBuffer::wrap(capabilities));
+  this->capabilities_->set_value(ByteBuffer::wrap(this->capability_flags_()));
   this->setup_complete_ = true;
 }
 
@@ -157,28 +156,23 @@ void ESP32ImprovComponent::loop() {
       }
       break;
     case improv::STATE_AWAITING_AUTHORIZATION: {
-#ifdef USE_BINARY_SENSOR
-      if (this->authorizer_ == nullptr ||
-          (this->authorized_start_ != 0 && ((now - this->authorized_start_) < this->authorized_duration_))) {
+      if (this->physically_authorized_(now) || this->session_authorized_(now)) {
         this->set_state_(improv::STATE_AUTHORIZED);
       } else {
         if (!this->check_identify_())
           this->set_status_indicator_state_(true);
       }
-#else
-      this->set_state_(improv::STATE_AUTHORIZED);
-#endif
       this->check_wifi_connection_();
       break;
     }
     case improv::STATE_AUTHORIZED: {
-#ifdef USE_BINARY_SENSOR
-      if (this->authorizer_ != nullptr && now - this->authorized_start_ > this->authorized_duration_) {
+      if (!this->physically_authorized_(now) && !this->session_authorized_(now)) {
         ESP_LOGD(TAG, "Authorization timeout");
+        if (this->setup_code_)
+          this->setup_code_->end();
         this->set_state_(improv::STATE_AWAITING_AUTHORIZATION);
         return;
       }
-#endif
       if (!this->check_identify_()) {
         this->set_status_indicator_state_((now % 1000) < 500);
       }
@@ -296,6 +290,16 @@ void ESP32ImprovComponent::set_error_(improv::Error error) {
 }
 
 void ESP32ImprovComponent::send_response_(std::span<const uint8_t> response) {
+  if (this->sealed_response_) {
+    // the inner result goes without its checksum; nothing at all once the session is gone
+    std::vector<uint8_t> sealed = this->setup_code_->seal(response.first(response.size() - 1));
+    if (sealed.empty())
+      return;
+    this->rpc_response_->set_value(std::move(sealed));
+    if (this->state_ != improv::STATE_STOPPED)
+      this->rpc_response_->notify();
+    return;
+  }
   // The BLE characteristic owns its value, so one exact-size copy is required here
   this->rpc_response_->set_value(std::vector<uint8_t>(response.begin(), response.end()));
   if (this->state_ != improv::STATE_STOPPED)
@@ -338,7 +342,10 @@ void ESP32ImprovComponent::stop() {
 float ESP32ImprovComponent::get_setup_priority() const { return setup_priority::AFTER_BLUETOOTH; }
 
 void ESP32ImprovComponent::dump_config() {
-  ESP_LOGCONFIG(TAG, "ESP32 Improv:");
+  ESP_LOGCONFIG(TAG,
+                "ESP32 Improv:\n"
+                "  Setup code: %s",
+                YESNO(this->setup_code_ != nullptr));
 #ifdef USE_BINARY_SENSOR
   LOG_BINARY_SENSOR("  ", "Authorizer", this->authorizer_);
 #endif
@@ -359,67 +366,133 @@ void ESP32ImprovComponent::process_incoming_data_() {
 #endif
   if (this->incoming_data_.size() - 3 == length) {
     this->set_error_(improv::ERROR_NONE);
-    improv::ImprovCommand command = improv::parse_improv_data(this->incoming_data_);
-    switch (command.command) {
-      case improv::BAD_CHECKSUM:
-        ESP_LOGW(TAG, "Error decoding Improv payload");
-        this->set_error_(improv::ERROR_INVALID_RPC);
-        this->incoming_data_.clear();
-        break;
-      case improv::WIFI_SETTINGS: {
-        if (this->state_ != improv::STATE_AUTHORIZED) {
-          ESP_LOGW(TAG, "Settings received, but not authorized");
-          this->set_error_(improv::ERROR_NOT_AUTHORIZED);
-          this->incoming_data_.clear();
-          return;
-        }
-#ifdef USE_PROVISIONING
-        if (provisioning::global_provisioning_manager != nullptr &&
-            provisioning::global_provisioning_manager->closed()) {
-          ESP_LOGW(TAG, "Provisioning window closed; refusing settings");
-          this->set_error_(improv::ERROR_NOT_AUTHORIZED);
-          this->incoming_data_.clear();
-          return;
-        }
-#endif
-        if (wifi::global_wifi_component->is_disabled()) {
-          // Wi-Fi is disabled, so we can't provision. Respond immediately
-          // instead of letting the client wait out its provisioning timeout.
-          ESP_LOGW(TAG, "Wi-Fi is disabled; cannot provision");
-          this->set_error_(improv::ERROR_UNABLE_TO_CONNECT);
-          this->incoming_data_.clear();
-          return;
-        }
-        wifi::WiFiAP sta{};
-        sta.set_ssid(command.ssid.c_str());
-        sta.set_password(command.password.c_str());
-        this->connecting_sta_ = sta;
-
-        wifi::global_wifi_component->set_sta(sta);
-        wifi::global_wifi_component->start_connecting(sta);
-        this->set_state_(improv::STATE_PROVISIONING);
-        ESP_LOGD(TAG, "Received Improv Wi-Fi settings ssid=%s, password=" LOG_SECRET("%s"), command.ssid.c_str(),
-                 command.password.c_str());
-
-        this->set_timeout("wifi-connect-timeout", 30000, [this]() { this->on_wifi_connect_timeout_(); });
-        this->incoming_data_.clear();
-        break;
-      }
-      case improv::IDENTIFY:
-        this->incoming_data_.clear();
-        this->identify_start_ = millis();
-        break;
-      default:
-        ESP_LOGW(TAG, "Unknown Improv payload");
-        this->set_error_(improv::ERROR_UNKNOWN_RPC);
-        this->incoming_data_.clear();
+    if (this->setup_code_ && setup_code::is_command(this->incoming_data_[0])) {
+      this->process_setup_code_();
+    } else {
+      improv::ImprovCommand command = improv::parse_improv_data(this->incoming_data_);
+      this->process_command_(command, false);
     }
+    this->incoming_data_.clear();
   } else if (this->incoming_data_.size() - 2 > length) {
     ESP_LOGV(TAG, "Too much data received or data malformed; resetting buffer");
     this->incoming_data_.clear();
   } else {
     ESP_LOGV(TAG, "Waiting for split data packets");
   }
+}
+
+void ESP32ImprovComponent::process_setup_code_() {
+  uint8_t checksum = 0;
+  for (size_t i = 0; i < this->incoming_data_.size() - 1; i++)
+    checksum += this->incoming_data_[i];
+  if (checksum != this->incoming_data_.back()) {
+    ESP_LOGW(TAG, "Error decoding Improv payload");
+    this->set_error_(improv::ERROR_INVALID_RPC);
+    return;
+  }
+  uint32_t now = millis();
+  uint8_t command = this->incoming_data_[0];
+  std::span<const uint8_t> data(this->incoming_data_.data() + 2, this->incoming_data_[1]);
+  setup_code::Reply reply = this->setup_code_->handle(command, data, now);
+  if (reply.error != setup_code::ERROR_NONE) {
+    ESP_LOGW(TAG, "Setup code authentication failed");
+    this->set_error_(static_cast<improv::Error>(reply.error));
+  }
+  if (command == setup_code::COMMAND_CONFIRM && this->setup_code_->has_session()) {
+    ESP_LOGI(TAG, "Setup code confirmed: settings are accepted sealed by its session");
+    this->session_active_ = now;
+    this->set_state_(improv::STATE_AUTHORIZED);  // before the result: the client reads the state once it has it
+  }
+  if (!reply.result.empty()) {
+    this->rpc_response_->set_value(std::move(reply.result));
+    this->rpc_response_->notify();
+  }
+  if (reply.inner.empty())
+    return;
+  this->session_active_ = now;
+  uint8_t inner_checksum = 0;
+  for (uint8_t byte : reply.inner)
+    inner_checksum += byte;
+  reply.inner.push_back(inner_checksum);
+  this->process_command_(improv::parse_improv_data(reply.inner), true);
+  std::fill(reply.inner.begin(), reply.inner.end(), 0);
+}
+
+void ESP32ImprovComponent::process_command_(const improv::ImprovCommand &command, bool sealed) {
+  switch (command.command) {
+    case improv::BAD_CHECKSUM:
+      ESP_LOGW(TAG, "Error decoding Improv payload");
+      this->set_error_(improv::ERROR_INVALID_RPC);
+      break;
+    case improv::WIFI_SETTINGS: {
+      // with a setup code, plain settings need a physical authorization: the code's only authorizes sealed ones
+      bool authorized = sealed || (this->setup_code_ ? this->physically_authorized_(millis()) : true);
+      if (this->state_ != improv::STATE_AUTHORIZED || !authorized) {
+        ESP_LOGW(TAG, "Settings received, but not authorized");
+        this->set_error_(improv::ERROR_NOT_AUTHORIZED);
+        return;
+      }
+#ifdef USE_PROVISIONING
+      if (provisioning::global_provisioning_manager != nullptr && provisioning::global_provisioning_manager->closed()) {
+        ESP_LOGW(TAG, "Provisioning window closed; refusing settings");
+        this->set_error_(improv::ERROR_NOT_AUTHORIZED);
+        return;
+      }
+#endif
+      if (wifi::global_wifi_component->is_disabled()) {
+        // Wi-Fi is disabled, so we can't provision. Respond immediately
+        // instead of letting the client wait out its provisioning timeout.
+        ESP_LOGW(TAG, "Wi-Fi is disabled; cannot provision");
+        this->set_error_(improv::ERROR_UNABLE_TO_CONNECT);
+        return;
+      }
+      wifi::WiFiAP sta{};
+      sta.set_ssid(command.ssid.c_str());
+      sta.set_password(command.password.c_str());
+      this->connecting_sta_ = sta;
+      this->sealed_response_ = sealed;
+
+      wifi::global_wifi_component->set_sta(sta);
+      wifi::global_wifi_component->start_connecting(sta);
+      this->set_state_(improv::STATE_PROVISIONING);
+      ESP_LOGD(TAG, "Received Improv Wi-Fi settings ssid=%s, password=" LOG_SECRET("%s"), command.ssid.c_str(),
+               command.password.c_str());
+
+      this->set_timeout("wifi-connect-timeout", 30000, [this]() { this->on_wifi_connect_timeout_(); });
+      break;
+    }
+    case improv::IDENTIFY:
+      this->identify_start_ = millis();
+      break;
+    default:
+      ESP_LOGW(TAG, "Unknown Improv payload");
+      this->set_error_(improv::ERROR_UNKNOWN_RPC);
+  }
+}
+
+// Physically: within the authorization window of the button press, or always with neither a button nor a setup code
+bool ESP32ImprovComponent::physically_authorized_(uint32_t now) const {
+#ifdef USE_BINARY_SENSOR
+  if (this->authorizer_ != nullptr)
+    return this->authorized_start_ != 0 && now - this->authorized_start_ < this->authorized_duration_;
+#endif
+  return !this->setup_code_;
+}
+
+// By the setup code: it authorizes only the commands sealed by its session, and expires like a button press
+bool ESP32ImprovComponent::session_authorized_(uint32_t now) const {
+  return this->setup_code_ && this->setup_code_->has_session() && now - this->session_active_ < this->authorized_duration_;
+}
+
+uint8_t ESP32ImprovComponent::capability_flags_() const {
+  uint8_t capabilities = 0x00;
+#ifdef USE_OUTPUT
+  if (this->status_indicator_ != nullptr)
+    capabilities |= improv::CAPABILITY_IDENTIFY;
+#endif
+  if (this->setup_code_)
+    capabilities |= setup_code::CAPABILITY;
+  return capabilities;
 }
 
 void ESP32ImprovComponent::on_wifi_connect_timeout_() {
@@ -472,6 +545,8 @@ void ESP32ImprovComponent::check_wifi_connection_() {
     }
 #endif
     this->send_response_(builder.finish());
+    if (this->setup_code_)
+      this->setup_code_->end();  // provisioned: the session is over
   } else if (this->is_active() && this->state_ != improv::STATE_PROVISIONED) {
     ESP_LOGD(TAG, "WiFi provisioned externally");
   }
@@ -486,13 +561,7 @@ void ESP32ImprovComponent::advertise_service_data_() {
   service_data[1] = IMPROV_PROTOCOL_ID_2;  // IM
   service_data[2] = static_cast<uint8_t>(this->state_);
 
-  uint8_t capabilities = 0x00;
-#ifdef USE_OUTPUT
-  if (this->status_indicator_ != nullptr)
-    capabilities |= improv::CAPABILITY_IDENTIFY;
-#endif
-
-  service_data[3] = capabilities;
+  service_data[3] = this->capability_flags_();
   // service_data[4-7] are already 0 (Reserved)
 
   // Atomically set service data and disable name in advertising
@@ -539,13 +608,8 @@ void ESP32ImprovComponent::release_advertising_() {
 }
 
 improv::State ESP32ImprovComponent::get_initial_state_() const {
-#ifdef USE_BINARY_SENSOR
-  // If we have an authorizer, start in awaiting authorization state
-  return this->authorizer_ == nullptr ? improv::STATE_AUTHORIZED : improv::STATE_AWAITING_AUTHORIZATION;
-#else
-  // No binary_sensor support = no authorizer possible, start as authorized
-  return improv::STATE_AUTHORIZED;
-#endif
+  // with an authorizer or a setup code, a client has to authorize first
+  return this->physically_authorized_(millis()) ? improv::STATE_AUTHORIZED : improv::STATE_AWAITING_AUTHORIZATION;
 }
 
 ESP32ImprovComponent *global_improv_component = nullptr;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)

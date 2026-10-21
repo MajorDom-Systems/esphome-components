@@ -1,5 +1,7 @@
 # ESP32-C3 shipped without Wi-Fi: the Hub gives it a network over Improv BLE, which accepts the Wi-Fi password only
 # over an LE Secure Connections link (ble_link_security). Compile: esphome compile examples/esp32c3_improv_secure.yaml
+# With its own setup code (printed on it), the Hub also proves it is the one meant to set it up:
+# esphome -s setup_code 1234-5678 compile ..., and uncomment `setup_code:` below (our esp32_improv, Improv 2.5)
 substitutions:
   authorizer: none  # or boot_button
 
@@ -22,6 +24,7 @@ wifi:  # no networks: the Hub sets them over Improv
 
 esp32_improv:
   authorizer: ${authorizer}
+  # setup_code: ${setup_code}
   on_provisioned:
     - delay: 10s  # lets the Hub read the result first: removing a bond drops its link
     - ble_link_security.clear_bonds:  # the Hub's bond served only this
