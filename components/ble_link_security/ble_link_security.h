@@ -6,6 +6,7 @@
 
 #ifdef USE_ESP32
 
+#include "esphome/components/esp32_ble/ble.h"
 #include "esphome/components/esp32_ble_server/ble_characteristic.h"
 
 #include <optional>
@@ -19,6 +20,7 @@ class BLELinkSecurity final : public Component {
  public:
   BLELinkSecurity();
   void loop() override;
+  void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);  // esp32_ble calls it
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::AFTER_BLUETOOTH; }
 

@@ -27,7 +27,7 @@ esp32_improv:
     - ble_link_security.clear_bonds:  # the Hub's bond served only this
 
 esp32_ble:
-  auth_req_mode: sc_bond
+  auth_req_mode: sc_only  # encrypted, nothing stored: the Hub pairs without bonding
   min_key_size: 16
   max_key_size: 16
 
@@ -39,6 +39,14 @@ ble_link_security:
 api:
   encryption: {}
 
+# once on Wi-Fi it lends its Bluetooth to the Hub, like ESPHome's ready-made proxy firmware (Improv + proxy)
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+
+bluetooth_proxy:
+  active: true
+
 binary_sensor:
   - platform: gpio
     id: boot_button
@@ -47,6 +55,11 @@ binary_sensor:
       inverted: true
       mode: INPUT_PULLUP
 
+switch:
+  - platform: template
+    name: "Test Switch"
+    optimistic: true
+
 button:
-  - platform: factory_reset
+  - platform: factory_reset  # forgets Wi-Fi and the API key: back to unprovisioned
     name: "Factory Reset"

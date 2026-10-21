@@ -3,9 +3,11 @@ dataset): the characteristics that receive them accept a write only over an encr
 before it writes and a secret never crosses the air in clear text.
 
 Pairing is "Just Works" unless a static `passkey` is set (printed on the device): Just Works encrypts the link against
-passive sniffing but does not authenticate the peer (no MITM protection); a passkey does. Bonds are kept only until the
-node is provisioned (`ble_link_security.clear_bonds`, called by `thread_provisioning` itself) and are erased with NVS on
-a factory reset.
+passive sniffing but does not authenticate the peer (no MITM protection); a passkey does. The node answers a central's
+pairing request itself (ESPHome does so only for its own client links) and the stack refuses anything weaker than
+`esp32_ble: auth_req_mode`. With `sc_only` (the examples) nothing is bonded, so no key is stored on either side; with a
+bonding mode, bonds are dropped once the node is provisioned (`ble_link_security.clear_bonds`, which
+`thread_provisioning` calls itself) and with NVS on a factory reset.
 """
 
 import re
@@ -42,6 +44,7 @@ def uuid128(value):
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(BLELinkSecurity),
+        cv.GenerateID(esp32_ble.CONF_BLE_ID): cv.use_id(esp32_ble.ESP32BLE),
         # e.g. Improv's RPC command: service 00467768-6228-2272-4663-277478268000, characteristic …8003
         cv.Optional(CONF_CHARACTERISTICS, default=[]): cv.ensure_list(
             cv.Schema({cv.Required(CONF_SERVICE): uuid128, cv.Required(CONF_CHARACTERISTIC): uuid128})
@@ -80,6 +83,7 @@ FINAL_VALIDATE_SCHEMA = _final_validate
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
+    esp32_ble.register_gap_event_handler(await cg.get_variable(config[esp32_ble.CONF_BLE_ID]), var)
     for item in config[CONF_CHARACTERISTICS]:
         cg.add(var.add_characteristic(item[CONF_SERVICE], item[CONF_CHARACTERISTIC]))
     if CONF_PASSKEY in config:

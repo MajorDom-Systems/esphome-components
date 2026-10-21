@@ -4,6 +4,7 @@
 
 #include "esphome/components/esp32_ble/ble.h"
 #include "esphome/components/esp32_ble_server/ble_server.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
 #include <esp_gap_ble_api.h>
@@ -59,6 +60,33 @@ void BLELinkSecurity::loop() {
     }
     this->protect(characteristic);
     it = this->pending_.erase(it);
+  }
+}
+
+void BLELinkSecurity::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+  switch (event) {
+    // A central's Pairing Request reaches the GATT server as a security request: unanswered, it times out (ESPHome
+    // answers only for its own client links). Whether the pairing is strong enough is the stack's to enforce (auth_req
+    // mode, ONLY_ACCEPT_SPECIFIED_SEC_AUTH, key size). For a client link (bluetooth_proxy) this repeats ble_client's
+    // own acceptance, which the stack ignores.
+    case ESP_GAP_BLE_SEC_REQ_EVT:
+      esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
+      break;
+    case ESP_GAP_BLE_AUTH_CMPL_EVT: {
+      const auto &auth = param->ble_security.auth_cmpl;
+      char address[MAC_ADDRESS_PRETTY_BUFFER_SIZE];
+      format_mac_addr_upper(auth.bd_addr, address);
+      if (auth.success) {
+        ESP_LOGI(TAG, "[%s] Link encrypted: %s pairing, %s", address,
+                 (auth.auth_mode & ESP_LE_AUTH_REQ_SC_ONLY) ? "LE Secure Connections" : "legacy",
+                 (auth.auth_mode & ESP_LE_AUTH_REQ_MITM) ? "authenticated (MITM protected)" : "Just Works");
+      } else {
+        ESP_LOGW(TAG, "[%s] Pairing failed, reason 0x%02X", address, auth.fail_reason);
+      }
+      break;
+    }
+    default:
+      break;
   }
 }
 
