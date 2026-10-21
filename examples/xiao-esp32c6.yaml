@@ -1,0 +1,75 @@
+# Seeed XIAO ESP32-C6 shipped without a Thread network: a controller (e.g. the MajorDom Hub) gives it its dataset over
+# BLE (thread_provisioning), then pairs it over the API with a key of its own (zero PSK).
+# Also an active Bluetooth proxy once on Thread. Compile: esphome compile examples/xiao-esp32c6.yaml
+substitutions:
+  authorizer: none  # or boot_button: a dataset is then accepted for a minute after BOOT is pressed
+
+esphome:
+  name: xiao-c6-thread
+  friendly_name: XIAO C6 Thread
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+esp32:
+  variant: esp32c6
+  board: esp32-c6-devkitc-1
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+logger:
+
+network:
+  enable_ipv6: true
+
+openthread:
+  # Placeholder network, never joined: the node is unprovisioned while this key is in its active dataset. Not a
+  # secret, but give every product its own (32 hex digits, the first not 0). No `tlv:`, no `force_dataset`.
+  network_key: 0xa300cb8d731d79235840c890f3926d74
+  output_power: -10
+
+thread_provisioning:
+  authorizer: ${authorizer}
+
+api:
+  encryption: {}  # no key: the Hub sets one over the zero PSK at pairing
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+
+bluetooth_proxy:
+  active: true
+
+binary_sensor:
+  - platform: gpio
+    id: boot_button
+    internal: true
+    pin:
+      number: GPIO9
+      inverted: true
+      mode: INPUT_PULLUP
+
+switch:
+  # XIAO ESP32-C6 RF switch: GPIO3 low enables it, GPIO14 low selects the onboard ceramic antenna
+  - platform: gpio
+    id: rf_switch_enable
+    pin: GPIO3
+    restore_mode: ALWAYS_OFF
+    internal: true
+  - platform: gpio
+    id: rf_antenna_external
+    pin: GPIO14
+    restore_mode: ALWAYS_OFF
+    internal: true
+
+sensor:
+  - platform: uptime
+    name: "Uptime"
+
+button:
+  - platform: factory_reset  # erases NVS, the dataset included: back to unprovisioned
+    name: "Factory Reset"

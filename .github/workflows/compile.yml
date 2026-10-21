@@ -1,0 +1,42 @@
+name: Compile
+
+on:
+  push:
+    branches: [develop, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: ${{ matrix.example }} (authorizer ${{ matrix.authorizer }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [xiao-esp32c6]
+        authorizer: [none, boot_button]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ESPHome
+        # pinned in requirements.txt (Dependabot bumps it); --prefer-binary: dbus-fast can lack a wheel for a while
+        run: pip install --prefer-binary -r requirements.txt
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.platformio
+          key: platformio-${{ hashFiles('requirements.txt') }}
+
+      - name: Validate
+        run: esphome -s authorizer ${{ matrix.authorizer }} config examples/${{ matrix.example }}.yaml > /dev/null
+
+      - name: Compile
+        run: esphome -s authorizer ${{ matrix.authorizer }} compile examples/${{ matrix.example }}.yaml

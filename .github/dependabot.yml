@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps-ci): "
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # the pinned ESPHome release the examples are compiled against: each bump is checked by compile.yml
+  - package-ecosystem: "pip"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps-pip): "
