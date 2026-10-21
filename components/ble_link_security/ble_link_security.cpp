@@ -35,8 +35,7 @@ void BLELinkSecurity::protect(BLECharacteristic *characteristic) {
     this->mark_failed();
     return;
   }
-  esp_gatt_perm_t write = this->passkey_.has_value() ? ESP_GATT_PERM_WRITE_ENC_MITM : ESP_GATT_PERM_WRITE_ENCRYPTED;
-  characteristic->*permissions_member() = ESP_GATT_PERM_READ | write;
+  characteristic->*permissions_member() = ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE_ENCRYPTED;
   this->protected_++;
 }
 
@@ -77,9 +76,8 @@ void BLELinkSecurity::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_ga
       char address[MAC_ADDRESS_PRETTY_BUFFER_SIZE];
       format_mac_addr_upper(auth.bd_addr, address);
       if (auth.success) {
-        ESP_LOGI(TAG, "[%s] Link encrypted: %s pairing, %s", address,
-                 (auth.auth_mode & ESP_LE_AUTH_REQ_SC_ONLY) ? "LE Secure Connections" : "legacy",
-                 (auth.auth_mode & ESP_LE_AUTH_REQ_MITM) ? "authenticated (MITM protected)" : "Just Works");
+        ESP_LOGI(TAG, "[%s] Link encrypted: %s pairing", address,
+                 (auth.auth_mode & ESP_LE_AUTH_REQ_SC_ONLY) ? "LE Secure Connections" : "legacy");
       } else {
         ESP_LOGW(TAG, "[%s] Pairing failed, reason 0x%02X", address, auth.fail_reason);
       }
@@ -91,17 +89,12 @@ void BLELinkSecurity::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_ga
 }
 
 void BLELinkSecurity::apply_security_params_() {
-  // refuse a pairing weaker than esp32_ble's auth_req_mode (Secure Connections, and MITM with a passkey), instead of
-  // falling back to legacy pairing
+  // refuse a pairing weaker than esp32_ble's auth_req_mode (Secure Connections), instead of falling back to legacy
+  // pairing
   uint8_t only_specified = ESP_BLE_ONLY_ACCEPT_SPECIFIED_AUTH_ENABLE;
   if (esp_ble_gap_set_security_param(ESP_BLE_SM_ONLY_ACCEPT_SPECIFIED_SEC_AUTH, &only_specified, sizeof(uint8_t)) !=
       ESP_OK)
     ESP_LOGE(TAG, "Could not require Secure Connections");
-  if (this->passkey_.has_value()) {
-    uint32_t passkey = *this->passkey_;
-    if (esp_ble_gap_set_security_param(ESP_BLE_SM_SET_STATIC_PASSKEY, &passkey, sizeof(uint32_t)) != ESP_OK)
-      ESP_LOGE(TAG, "Could not set the passkey");
-  }
 }
 
 void BLELinkSecurity::clear_bonds() {
@@ -118,9 +111,9 @@ void BLELinkSecurity::clear_bonds() {
 void BLELinkSecurity::dump_config() {
   ESP_LOGCONFIG(TAG,
                 "BLE link security:\n"
-                "  Pairing: LE Secure Connections, %s\n"
+                "  Pairing: LE Secure Connections, Just Works (no MITM protection)\n"
                 "  Protected characteristics: %u (%u pending)",
-                this->passkey_.has_value() ? "passkey" : "Just Works (no MITM protection)", this->protected_,
+                this->protected_,
                 static_cast<unsigned>(this->pending_.size()));
 }
 

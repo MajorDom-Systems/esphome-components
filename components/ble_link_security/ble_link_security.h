@@ -9,7 +9,6 @@
 #include "esphome/components/esp32_ble/ble.h"
 #include "esphome/components/esp32_ble_server/ble_characteristic.h"
 
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,10 +26,9 @@ class BLELinkSecurity final : public Component {
   void add_characteristic(const std::string &service, const std::string &characteristic) {
     this->pending_.emplace_back(service, characteristic);
   }
-  void set_passkey(uint32_t passkey) { this->passkey_ = passkey; }
 
-  /// Makes a write to `characteristic` need an encrypted link (authenticated with a passkey set); call it before its
-  /// service starts, as the permissions are fixed once the stack has the attribute.
+  /// Makes a write to `characteristic` need an encrypted link; call it before its service starts, as the permissions
+  /// are fixed once the stack has the attribute.
   void protect(esp32_ble_server::BLECharacteristic *characteristic);
   /// Forgets every bonded peer, e.g. once the node is provisioned.
   void clear_bonds();
@@ -39,7 +37,6 @@ class BLELinkSecurity final : public Component {
   void apply_security_params_();
 
   std::vector<std::pair<std::string, std::string>> pending_;  // service, characteristic
-  std::optional<uint32_t> passkey_;
   bool active_{false};
   uint8_t protected_{0};
 };
