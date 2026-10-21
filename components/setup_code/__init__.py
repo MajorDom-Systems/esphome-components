@@ -12,7 +12,6 @@ import secrets
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from esphome.components.esp32 import add_idf_sdkconfig_option
 import esphome.config_validation as cv
 
 DEPENDENCIES = ["esp32"]
@@ -43,7 +42,6 @@ def verifier(code: int, salt: bytes, iterations: int) -> tuple[bytes, bytes]:
 
 def verifier_args(code: int) -> list:
     """The arguments of `set_setup_code(salt, iterations, w0, L)` for ``code``, with a fresh salt."""
-    add_idf_sdkconfig_option("CONFIG_MBEDTLS_HKDF_C", True)
     salt = secrets.token_bytes(16)
     w0, public = verifier(code, salt, ITERATIONS)
     return [list(salt), ITERATIONS, list(w0), list(public)]

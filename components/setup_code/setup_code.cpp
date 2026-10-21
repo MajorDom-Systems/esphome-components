@@ -2,7 +2,6 @@
 
 #include <mbedtls/ecp.h>
 #include <mbedtls/gcm.h>
-#include <mbedtls/hkdf.h>
 #include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
 #include <mbedtls/sha256.h>
@@ -80,6 +79,30 @@ static std::vector<uint8_t> result_frame(uint8_t command, std::initializer_list<
     checksum += byte;
   frame.push_back(checksum);
   return frame;
+}
+
+/// HKDF-SHA-256 with an empty salt (RFC 5869), for up to 64 bytes. ESP-IDF builds mbedtls_hkdf() only on request
+/// (CONFIG_MBEDTLS_HKDF_C), so a node without a setup code needn't change its sdkconfig.
+static bool hkdf(const uint8_t *ikm, size_t ikm_size, const char *info, uint8_t *okm, size_t size) {
+  const mbedtls_md_info_t *sha256 = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  const uint8_t salt[32] = {};
+  uint8_t prk[32], block[32];
+  bool ok = mbedtls_md_hmac(sha256, salt, sizeof(salt), ikm, ikm_size, prk) == 0;
+  std::vector<uint8_t> input;
+  for (uint8_t counter = 1; ok && size > 0; counter++) {
+    input.assign(block, block + (counter > 1 ? sizeof(block) : 0));  // T(n-1) || info || n
+    input.insert(input.end(), info, info + strlen(info));
+    input.push_back(counter);
+    ok = mbedtls_md_hmac(sha256, prk, sizeof(prk), input.data(), input.size(), block) == 0;
+    size_t take = std::min(size, sizeof(block));
+    memcpy(okm, block, take);
+    okm += take;
+    size -= take;
+  }
+  mbedtls_platform_zeroize(prk, sizeof(prk));
+  mbedtls_platform_zeroize(block, sizeof(block));
+  mbedtls_platform_zeroize(input.data(), input.size());
+  return ok;
 }
 
 /// RFC 9383's transcript item: an 8-byte little-endian length, then the bytes.
@@ -215,13 +238,9 @@ bool SetupCodeAuth::respond_(std::span<const uint8_t> share_p, Point &share_v, s
   put_item(transcript, this->w0_.data(), this->w0_.size());
   mbedtls_sha256(transcript.data(), transcript.size(), main_key, 0);
 
-  static constexpr char CONFIRMATION_KEYS[] = "ConfirmationKeys", SHARED_KEY[] = "SharedKey";
   const mbedtls_md_info_t *sha256 = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-  ok = mbedtls_hkdf(sha256, nullptr, 0, main_key, sizeof(main_key),
-                    reinterpret_cast<const uint8_t *>(CONFIRMATION_KEYS), sizeof(CONFIRMATION_KEYS) - 1,
-                    confirmation_keys, sizeof(confirmation_keys)) == 0 &&
-       mbedtls_hkdf(sha256, nullptr, 0, main_key, sizeof(main_key), reinterpret_cast<const uint8_t *>(SHARED_KEY),
-                    sizeof(SHARED_KEY) - 1, this->shared_key_.data(), this->shared_key_.size()) == 0 &&
+  ok = hkdf(main_key, sizeof(main_key), "ConfirmationKeys", confirmation_keys, sizeof(confirmation_keys)) &&
+       hkdf(main_key, sizeof(main_key), "SharedKey", this->shared_key_.data(), this->shared_key_.size()) &&
        mbedtls_md_hmac(sha256, confirmation_keys, 32, share_v.data(), share_v.size(), this->confirm_p_.data()) == 0 &&
        mbedtls_md_hmac(sha256, confirmation_keys + 32, 32, share_p.data(), share_p.size(), confirm_v.data()) == 0;
 
