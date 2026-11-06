@@ -390,7 +390,8 @@ void ESP32ImprovComponent::process_setup_code_() {
     this->set_error_(improv::ERROR_INVALID_RPC);
     return;
   }
-  uint32_t now = millis();
+  // the loop's clock, not millis(): loop() checks the session against it right after, and a later stamp underflows there
+  uint32_t now = App.get_loop_component_start_time();
   uint8_t command = this->incoming_data_[0];
   std::span<const uint8_t> data(this->incoming_data_.data() + 2, this->incoming_data_[1]);
   setup_code::Reply reply = this->setup_code_->handle(command, data, now);
