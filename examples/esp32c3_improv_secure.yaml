@@ -1,5 +1,5 @@
 # ESP32-C3 shipped without Wi-Fi: the Hub gives it a network over Improv BLE, which accepts the Wi-Fi password only
-# over an LE Secure Connections link (ble_link_security). Compile: esphome compile example/esp32c3_improv_secure.yaml
+# over an LE Secure Connections link (ble_link_security). Compile: esphome compile examples/esp32c3_improv_secure.yaml
 substitutions:
   authorizer: none  # or boot_button
 
