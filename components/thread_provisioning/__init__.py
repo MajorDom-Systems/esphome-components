@@ -13,12 +13,13 @@ import esphome.config_validation as cv
 from esphome.const import CONF_ID
 import esphome.final_validate as fv
 
-AUTO_LOAD = ["esp32_ble_server", "bytebuffer"]
+AUTO_LOAD = ["esp32_ble_server", "bytebuffer", "ble_link_security"]
 DEPENDENCIES = ["esp32", "openthread"]
 
 CONF_AUTHORIZER = "authorizer"
 CONF_AUTHORIZED_DURATION = "authorized_duration"
 CONF_ATTACH_TIMEOUT = "attach_timeout"
+CONF_REQUIRE_ENCRYPTION = "require_encryption"
 
 thread_provisioning_ns = cg.esphome_ns.namespace("thread_provisioning")
 ThreadProvisioning = thread_provisioning_ns.class_("ThreadProvisioning", cg.Component)
@@ -29,6 +30,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_AUTHORIZER): cv.Any(cv.none, cv.use_id(binary_sensor.BinarySensor)),
         cv.Optional(CONF_AUTHORIZED_DURATION, default="1min"): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_ATTACH_TIMEOUT, default="60s"): cv.positive_time_period_milliseconds,
+        # the dataset (the network key) is accepted only over an LE Secure Connections link: see ble_link_security
+        cv.Optional(CONF_REQUIRE_ENCRYPTION, default=True): cv.boolean,
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -54,5 +57,6 @@ async def to_code(config):
     await cg.register_component(var, config)
     cg.add(var.set_authorized_duration(config[CONF_AUTHORIZED_DURATION]))
     cg.add(var.set_attach_timeout(config[CONF_ATTACH_TIMEOUT]))
+    cg.add(var.set_require_encryption(config[CONF_REQUIRE_ENCRYPTION]))
     if config.get(CONF_AUTHORIZER) is not None:
         cg.add(var.set_authorizer(await cg.get_variable(config[CONF_AUTHORIZER])))
