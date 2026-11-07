@@ -56,7 +56,11 @@ void ThreadProvisioning::setup() {
     });
   }
 #endif
-  global_ble_server->on_disconnect([this](uint16_t) { wipe(this->incoming_); });
+  global_ble_server->on_disconnect([this](uint16_t) {
+    wipe(this->incoming_);
+    if (this->setup_code_)
+      this->setup_code_->end();
+  });
 }
 
 void ThreadProvisioning::loop() {
@@ -133,6 +137,9 @@ void ThreadProvisioning::start_service_() {
     this->result_char_ = this->service_->create_characteristic(
         RESULT_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
     this->result_char_->add_descriptor(new BLE2902());
+    this->capabilities_char_ = this->service_->create_characteristic(CAPABILITIES_UUID, BLECharacteristic::PROPERTY_READ);
+    this->capabilities_char_->set_value(
+        ByteBuffer::wrap(static_cast<uint8_t>(this->setup_code_ ? setup_code::CAPABILITY : 0)));
     this->error_char_->set_value(ByteBuffer::wrap(static_cast<uint8_t>(ERROR_NONE)));
   }
   if (this->service_->is_created()) {
@@ -148,19 +155,29 @@ void ThreadProvisioning::start_service_() {
   this->phase_ = Phase::SERVING;
 }
 
+// Physically: within a minute of the button press, or always with neither a button nor a setup code to wait for
 bool ThreadProvisioning::authorized_() const {
 #ifdef USE_BINARY_SENSOR
   if (this->authorizer_ != nullptr)
     return this->authorized_start_ != 0 && millis() - this->authorized_start_ < this->authorized_duration_;
 #endif
-  return true;
+  return !this->setup_code_;
+}
+
+// By the setup code: it authorizes only the commands sealed by its session, and expires like a button press
+bool ThreadProvisioning::session_authorized_() const {
+  return this->setup_code_ && this->setup_code_->has_session() &&
+         millis() - this->session_active_ < this->authorized_duration_;
 }
 
 void ThreadProvisioning::serve_() {
-  if (this->state_ == STATE_AWAITING_AUTHORIZATION && this->authorized_()) {
+  bool authorized = this->authorized_() || this->session_authorized_();
+  if (this->state_ == STATE_AWAITING_AUTHORIZATION && authorized) {
     this->set_state_(STATE_AUTHORIZED);
-  } else if (this->state_ == STATE_AUTHORIZED && !this->authorized_()) {
+  } else if (this->state_ == STATE_AUTHORIZED && !authorized) {
     ESP_LOGD(TAG, "Authorization expired");
+    if (this->setup_code_)
+      this->setup_code_->end();
     this->set_state_(STATE_AWAITING_AUTHORIZATION);
   }
   if (!this->incoming_.empty())
@@ -182,20 +199,51 @@ void ThreadProvisioning::process_incoming_() {
   uint8_t checksum = 0;
   for (size_t i = 0; i < length + 2; i++)
     checksum += this->incoming_[i];
+  std::span<const uint8_t> data(this->incoming_.data() + 2, length);
   if (checksum != this->incoming_[length + 2]) {
     ESP_LOGW(TAG, "Bad checksum");
     this->set_error_(ERROR_INVALID_RPC);
-  } else if (this->incoming_[0] != COMMAND_SET_DATASET) {
-    ESP_LOGW(TAG, "Unknown command 0x%02X", this->incoming_[0]);
+  } else if (this->setup_code_ && setup_code::is_command(this->incoming_[0])) {
+    this->run_setup_code_(this->incoming_[0], data);
+  } else {
+    this->run_command_(this->incoming_[0], data, false);
+  }
+  wipe(this->incoming_);
+}
+
+void ThreadProvisioning::run_setup_code_(uint8_t command, std::span<const uint8_t> data) {
+  setup_code::Reply reply = this->setup_code_->handle(command, data, millis());
+  this->set_error_(static_cast<Error>(reply.error));
+  if (reply.error != setup_code::ERROR_NONE)
+    ESP_LOGW(TAG, "Setup code authentication failed (0x%02X)", reply.error);
+  if (command == setup_code::COMMAND_CONFIRM && this->setup_code_->has_session()) {
+    ESP_LOGI(TAG, "Setup code confirmed: commands are accepted sealed by its session");
+    this->session_active_ = millis();
+    this->set_state_(STATE_AUTHORIZED);  // before the result: the client reads the state once it has it
+  }
+  if (!reply.result.empty()) {
+    this->result_char_->set_value(std::move(reply.result));
+    this->result_char_->notify();
+  }
+  if (!reply.inner.empty()) {
+    this->session_active_ = millis();
+    this->run_command_(reply.inner[0], std::span<const uint8_t>(reply.inner.data() + 2, reply.inner[1]), true);
+    wipe(reply.inner);
+  }
+}
+
+void ThreadProvisioning::run_command_(uint8_t command, std::span<const uint8_t> data, bool sealed) {
+  if (command != COMMAND_SET_DATASET) {
+    ESP_LOGW(TAG, "Unknown command 0x%02X", command);
     this->set_error_(ERROR_UNKNOWN_RPC);
-  } else if (this->state_ != STATE_AUTHORIZED) {
+  } else if (this->state_ != STATE_AUTHORIZED || !(sealed || this->authorized_())) {
     ESP_LOGW(TAG, "Dataset received, but not authorized");
     this->set_error_(ERROR_NOT_AUTHORIZED);
   } else {
     this->set_error_(ERROR_NONE);
-    this->apply_dataset_(std::span<const uint8_t>(this->incoming_.data() + 2, length));
+    this->sealed_result_ = sealed;
+    this->apply_dataset_(data);
   }
-  wipe(this->incoming_);
 }
 
 void ThreadProvisioning::apply_dataset_(std::span<const uint8_t> data) {
@@ -241,9 +289,10 @@ void ThreadProvisioning::check_attached_() {
     ESP_LOGI(TAG, "Attached to the Thread network as %s", otThreadDeviceRoleToString(role));
     wipe(&this->placeholder_, sizeof(this->placeholder_));
     this->set_state_(STATE_ATTACHED);
-    const uint8_t result[] = {COMMAND_SET_DATASET, 0, COMMAND_SET_DATASET};  // no data; checksum = 0x01 + 0x00
-    this->result_char_->set_value(std::vector<uint8_t>(result, result + sizeof(result)));
-    this->result_char_->notify();
+    const uint8_t result[] = {COMMAND_SET_DATASET, 0};  // no data
+    this->send_result_(result);
+    if (this->setup_code_)
+      this->setup_code_->end();
     this->phase_ = Phase::DONE;
     this->set_timeout("stop", STOP_DELAY, [this] {
       if (this->advertising_)
@@ -272,6 +321,23 @@ void ThreadProvisioning::check_attached_() {
   this->phase_ = Phase::SERVING;
 }
 
+void ThreadProvisioning::send_result_(std::span<const uint8_t> inner_result) {
+  std::vector<uint8_t> frame;
+  if (this->sealed_result_) {
+    frame = this->setup_code_->seal(inner_result);
+  } else {
+    frame.assign(inner_result.begin(), inner_result.end());
+    uint8_t checksum = 0;
+    for (uint8_t byte : frame)
+      checksum += byte;
+    frame.push_back(checksum);
+  }
+  if (frame.empty())
+    return;  // the session ended: nobody to tell
+  this->result_char_->set_value(std::move(frame));
+  this->result_char_->notify();
+}
+
 void ThreadProvisioning::set_state_(State state) {
   ESP_LOGD(TAG, "State 0x%02X -> 0x%02X", this->state_, state);
   this->state_ = state;
@@ -292,6 +358,7 @@ void ThreadProvisioning::dump_config() {
 #ifdef USE_BINARY_SENSOR
   LOG_BINARY_SENSOR("  ", "Authorizer", this->authorizer_);
 #endif
+  ESP_LOGCONFIG(TAG, "  Setup code: %s", YESNO(this->setup_code_ != nullptr));
 }
 
 }  // namespace esphome::thread_provisioning

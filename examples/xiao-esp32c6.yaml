@@ -1,6 +1,8 @@
 # Seeed XIAO ESP32-C6 shipped without a Thread network: a controller (e.g. the MajorDom Hub) gives it its dataset over
 # BLE (thread_provisioning), then pairs it over the API with a key of its own (zero PSK).
 # Also an active Bluetooth proxy once on Thread. Compile: esphome compile examples/xiao-esp32c6.yaml
+# With its own setup code (printed on it), the Hub also proves it is the one meant to set it up:
+# esphome -s setup_code 1234-5678 compile ..., and uncomment `setup_code:` below
 substitutions:
   authorizer: none  # or boot_button: a dataset is then accepted for a minute after BOOT is pressed
 
@@ -33,6 +35,7 @@ openthread:
 
 thread_provisioning:
   authorizer: ${authorizer}
+  # setup_code: ${setup_code}
 
 # The dataset is accepted only over an LE Secure Connections link (thread_provisioning's `require_encryption`, through
 # ble_link_security), paired Just Works

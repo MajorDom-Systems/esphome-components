@@ -7,6 +7,7 @@
 
 #include "esphome/components/esp32_ble_server/ble_characteristic.h"
 #include "esphome/components/esp32_ble_server/ble_server.h"
+#include "esphome/components/setup_code/setup_code.h"
 
 #ifdef USE_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
@@ -14,6 +15,7 @@
 
 #include <openthread/dataset.h>
 
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -25,6 +27,7 @@ static const char *const STATE_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe601";   
 static const char *const ERROR_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe602";   // read, notify: Error
 static const char *const RPC_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe603";     // write (chunks): a command frame
 static const char *const RESULT_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe604";  // read, notify: a result frame
+static const char *const CAPABILITIES_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe605";  // read: as Improv's (bit 4)
 
 enum State : uint8_t {
   STATE_AWAITING_AUTHORIZATION = 0x01,
@@ -40,11 +43,14 @@ enum Error : uint8_t {
   ERROR_UNABLE_TO_ATTACH = 0x03,
   ERROR_NOT_AUTHORIZED = 0x04,
   ERROR_INVALID_DATASET = 0x05,
+  ERROR_AUTHENTICATION_FAILED = setup_code::ERROR_AUTHENTICATION_FAILED,
+  ERROR_TOO_MANY_ATTEMPTS = setup_code::ERROR_TOO_MANY_ATTEMPTS,
   ERROR_UNKNOWN = 0xFF,
 };
 
 enum Command : uint8_t {
   COMMAND_SET_DATASET = 0x01,  // data: the active operational dataset, raw TLVs
+  // 0x08 to 0x0B: setup code authentication and Encrypted RPC, as Improv revision 2.5 (setup_code)
 };
 
 class ThreadProvisioning final : public Component {
@@ -60,6 +66,10 @@ class ThreadProvisioning final : public Component {
   void set_authorized_duration(uint32_t duration) { this->authorized_duration_ = duration; }
   void set_attach_timeout(uint32_t timeout) { this->attach_timeout_ = timeout; }
   void set_require_encryption(bool require) { this->require_encryption_ = require; }
+  void set_setup_code(std::vector<uint8_t> salt, uint32_t iterations, const setup_code::SetupCodeAuth::Scalar &w0,
+                      const setup_code::SetupCodeAuth::Point &L) {
+    this->setup_code_ = std::make_unique<setup_code::SetupCodeAuth>(std::move(salt), iterations, w0, L);
+  }
 
  protected:
   enum class Phase : uint8_t { CHECKING, STARTING, SERVING, ATTACHING, DONE };
@@ -70,8 +80,12 @@ class ThreadProvisioning final : public Component {
   void serve_();
   void check_attached_();
   void process_incoming_();
+  void run_setup_code_(uint8_t command, std::span<const uint8_t> data);
+  void run_command_(uint8_t command, std::span<const uint8_t> data, bool sealed);
   void apply_dataset_(std::span<const uint8_t> data);
   bool authorized_() const;
+  bool session_authorized_() const;
+  void send_result_(std::span<const uint8_t> inner_result);
   void set_state_(State state);
   void set_error_(Error error);
 
@@ -83,6 +97,9 @@ class ThreadProvisioning final : public Component {
   uint32_t attach_start_{0};
   bool advertising_{false};
   bool require_encryption_{true};
+  std::unique_ptr<setup_code::SetupCodeAuth> setup_code_;
+  uint32_t session_active_{0};  // ms: the last command sealed by the setup code session
+  bool sealed_result_{false};  // the dataset came sealed: so goes its result
   otOperationalDatasetTlvs placeholder_{};  // restored when the node cannot attach with the dataset it was given
   std::vector<uint8_t> incoming_;
 
@@ -91,6 +108,7 @@ class ThreadProvisioning final : public Component {
   esp32_ble_server::BLECharacteristic *error_char_{nullptr};
   esp32_ble_server::BLECharacteristic *rpc_char_{nullptr};
   esp32_ble_server::BLECharacteristic *result_char_{nullptr};
+  esp32_ble_server::BLECharacteristic *capabilities_char_{nullptr};
 #ifdef USE_BINARY_SENSOR
   binary_sensor::BinarySensor *authorizer_{nullptr};
 #endif
